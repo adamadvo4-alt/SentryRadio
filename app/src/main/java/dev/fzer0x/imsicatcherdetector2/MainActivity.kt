@@ -1198,7 +1198,7 @@ fun SettingsScreen(viewModel: ForensicViewModel) {
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
-                    text = "Developer: fzer0x | Version: 0.4.5",
+                    text = "Developer: fzer0x | Version: 0.4.6",
                     color = Color.Gray,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Medium

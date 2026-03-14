@@ -37,9 +37,11 @@ class SentryHook : IXposedHookLoadPackage {
     private val PREFS_NAME = "sentry_settings"
     private val KEY_BLOCK_GSM = "block_gsm"
     private val KEY_REJECT_A50 = "reject_a50"
+    private val KEY_APP_ENABLED = "app_enabled"
 
     private val blockGsm = AtomicReference(false)
     private val rejectA50 = AtomicReference(false)
+    private val appEnabled = AtomicReference(true)
 
     private var settingsContext: Context? = null
     
@@ -99,7 +101,8 @@ class SentryHook : IXposedHookLoadPackage {
                         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                         blockGsm.set(prefs.getBoolean(KEY_BLOCK_GSM, false))
                         rejectA50.set(prefs.getBoolean(KEY_REJECT_A50, false))
-                        XposedBridge.log("SentryHook: Settings loaded from SharedPreferences - BlockGSM: ${blockGsm.get()}, RejectA50: ${rejectA50.get()}")
+                        appEnabled.set(prefs.getBoolean(KEY_APP_ENABLED, true))
+                        XposedBridge.log("SentryHook: Settings loaded from SharedPreferences - BlockGSM: ${blockGsm.get()}, RejectA50: ${rejectA50.get()}, AppEnabled: ${appEnabled.get()}")
                     } catch (e: Exception) {
                         XposedBridge.log("SentryHook: Failed to load settings from SharedPreferences: ${e.message}")
                     }
@@ -121,14 +124,16 @@ class SentryHook : IXposedHookLoadPackage {
                         override fun onReceive(ctx: Context, intent: Intent) {
                             blockGsm.set(intent.getBooleanExtra("blockGsm", false))
                             rejectA50.set(intent.getBooleanExtra("rejectA50", false))
+                            appEnabled.set(intent.getBooleanExtra("appEnabled", true))
                             try {
                                 val prefs = ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                                 prefs.edit()
                                     .putBoolean(KEY_BLOCK_GSM, blockGsm.get())
                                     .putBoolean(KEY_REJECT_A50, rejectA50.get())
+                                    .putBoolean(KEY_APP_ENABLED, appEnabled.get())
                                     .apply()
                             } catch (e: Exception) {}
-                            XposedBridge.log("SentryHook: Settings updated & persisted - BlockGSM: ${blockGsm.get()}, RejectA50: ${rejectA50.get()}")
+                            XposedBridge.log("SentryHook: Settings updated & persisted - BlockGSM: ${blockGsm.get()}, RejectA50: ${rejectA50.get()}, AppEnabled: ${appEnabled.get()}")
                         }
                     }, filter, Context.RECEIVER_EXPORTED)
                 }
@@ -143,6 +148,8 @@ class SentryHook : IXposedHookLoadPackage {
             val rilClass = XposedHelpers.findClass("com.android.internal.telephony.RIL", lpparam.classLoader)
             XposedBridge.hookAllMethods(rilClass, "processUnsolicited", object : XC_MethodHook() {
                 override fun beforeHookedMethod(param: MethodHookParam) {
+                    if (!appEnabled.get()) return // App disabled - skip all processing
+                    
                     val response = param.args[0] ?: return
                     val respStr = response.toString().uppercase()
                     
@@ -257,6 +264,8 @@ class SentryHook : IXposedHookLoadPackage {
             val sstClass = XposedHelpers.findClass("com.android.internal.telephony.ServiceStateTracker", lpparam.classLoader)
             XposedHelpers.findAndHookMethod(sstClass, "handleMessage", Message::class.java, object : XC_MethodHook() {
                 override fun afterHookedMethod(param: MethodHookParam) {
+                    if (!appEnabled.get()) return // App disabled - skip all processing
+                    
                     val mSST = param.thisObject
                     val phone = XposedHelpers.getObjectField(mSST, "mPhone")
                     val context = XposedHelpers.getObjectField(phone, "mContext") as Context
@@ -450,6 +459,8 @@ class SentryHook : IXposedHookLoadPackage {
                 Array<ByteArray>::class.java, String::class.java, Int::class.java,
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
+                        if (!appEnabled.get()) return // App disabled - skip all processing
+                        
                         val context = XposedHelpers.getObjectField(param.thisObject, "mContext") as Context
                         val phone = XposedHelpers.getObjectField(param.thisObject, "mPhone")
                         val simSlot = XposedHelpers.callMethod(phone, "getPhoneId") as Int

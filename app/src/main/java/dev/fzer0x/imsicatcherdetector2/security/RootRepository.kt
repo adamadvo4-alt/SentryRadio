@@ -22,13 +22,12 @@ object RootRepository {
 
     /**
      * Prüft, ob Root-Zugriff gewährt wurde.
-     * Verbessert: Führt einen echten Test-Befehl aus.
+     * Verbessert: Führt einen echten Test-Befehl aus und überprüft uid=0.
      */
     suspend fun isRootAvailable(): Boolean = withContext(Dispatchers.IO) {
         try {
-            // Manchmal liefert isRoot ein falsches Negativ, wenn die Shell noch nicht bereit ist.
-            // Wir erzwingen eine Prüfung.
-            Shell.getShell().isRoot || Shell.cmd("id").exec().isSuccess
+            val result = Shell.cmd("id").exec()
+            result.isSuccess && result.out.joinToString().contains("uid=0")
         } catch (e: Exception) {
             Log.e(TAG, "Root check failed", e)
             false

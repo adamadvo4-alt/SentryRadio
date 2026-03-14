@@ -40,6 +40,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.runtime.*
@@ -150,8 +151,12 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startForensicService() {
-        val intent = Intent(this, ForensicService::class.java)
-        startForegroundService(intent)
+        val prefs = getSharedPreferences("sentry_settings", Context.MODE_PRIVATE)
+        val appEnabled = prefs.getBoolean("app_enabled", true)
+        if (appEnabled) {
+            val intent = Intent(this, ForensicService::class.java)
+            startForegroundService(intent)
+        }
     }
 
     fun requestOverlayPermission() {
@@ -970,6 +975,37 @@ fun SettingsScreen(viewModel: ForensicViewModel) {
             }
             Spacer(Modifier.height(8.dp))
             StatusIndicator("HARDENING MODULE", dashboardState.isHardeningModuleActive, Modifier.fillMaxWidth())
+            Spacer(Modifier.height(24.dp))
+        }
+
+        item {
+            Text("APP CONTROL", fontWeight = FontWeight.Black, color = Color.Cyan, fontSize = 18.sp)
+            Spacer(Modifier.height(16.dp))
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E1E))
+            ) {
+                Column(Modifier.padding(16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Settings, contentDescription = null, tint = Color.Cyan, modifier = Modifier.size(24.dp))
+                        Spacer(Modifier.width(12.dp))
+                        Text("APP ENABLED", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                        Spacer(Modifier.weight(1f))
+                        Switch(
+                            checked = settings.appEnabled,
+                            onCheckedChange = { viewModel.updateAppEnabled(it) },
+                            colors = SwitchDefaults.colors(checkedThumbColor = Color.Cyan, checkedTrackColor = Color.Cyan.copy(alpha = 0.5f))
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Master switch to enable/disable the entire app. When disabled, the service stops and modules become inactive.",
+                        color = Color.Gray,
+                        fontSize = 12.sp,
+                        lineHeight = 18.sp
+                    )
+                }
+            }
             Spacer(Modifier.height(24.dp))
         }
 
@@ -1970,7 +2006,7 @@ fun AnalyticsMetric(label: String, value: String, color: Color, modifier: Modifi
 
 @Composable
 fun TimelineScreen(viewModel: ForensicViewModel, onEventClick: (ForensicEvent) -> Unit) {
-    val logs by viewModel.allLogs.collectAsState()
+    val logs by viewModel.allLogsUnfiltered.collectAsState()
     val blockedIds by viewModel.blockedCellIds.collectAsState()
     val towers by viewModel.allTowers.collectAsState()
     val settings by viewModel.settings.collectAsState()

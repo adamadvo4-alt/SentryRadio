@@ -35,6 +35,7 @@ import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.io.File
 
 data class UserSettings(
     val updateRate: Int = 15,
@@ -60,6 +61,7 @@ data class UserSettings(
     val advancedTelemetry: Boolean = false,
     val extendedPanicMode: Boolean = false,
     val realTimeModemMonitoring: Boolean = false,
+    val appEnabled: Boolean = true,
     // 5G/SA Settings
     val force5gSa: Boolean = false,
     val force5gNsa: Boolean = false,
@@ -188,6 +190,10 @@ class ForensicViewModel(application: Application) : AndroidViewModel(application
         }
         filtered.sortedByDescending { event -> event.timestamp }
     }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    val allLogsUnfiltered: StateFlow<List<ForensicEvent>> = forensicDao.getRecentLogs(1000)
+        .map { it.sortedByDescending { event -> event.timestamp } }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     val allTowers: StateFlow<List<CellTower>> = forensicDao.getAllTowersFlow()
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
@@ -906,7 +912,7 @@ class ForensicViewModel(application: Application) : AndroidViewModel(application
     }
 
     private fun loadSettings() = UserSettings(
-        updateRate = prefs.getInt("update_rate", 15), sensitivity = prefs.getInt("sensitivity", 1), logRootFeed = prefs.getBoolean("log_root_feed", false), logRadioMetrics = prefs.getBoolean("log_radio_metrics", false), logSuspiciousEvents = prefs.getBoolean("log_suspicious_events", false), autoPcap = prefs.getBoolean("auto_pcap", true), alarmSound = prefs.getBoolean("alarm_sound", true), alarmVibe = prefs.getBoolean("alarm_vibe", true), beaconDbKey = encryptedPrefs.getString("beacon_db_key", "") ?: "", openCellIdKey = encryptedPrefs.getString("open_cell_id_key", "") ?: "", useBeaconDb = prefs.getBoolean("use_beacon_db", true), useOpenCellId = prefs.getBoolean("use_open_cell_id", false), showBlockedEvents = prefs.getBoolean("show_blocked_events", false), blockGsm = prefs.getBoolean("block_gsm", false), rejectA50 = prefs.getBoolean("reject_a50", false), markFakeCells = prefs.getBoolean("mark_fake_cells", true), forceLte = prefs.getBoolean("force_lte", false), autoMitigation = prefs.getBoolean("auto_mitigation", false), zeroDayProtection = prefs.getBoolean("zero_day_protection", false), geoFencingProtection = prefs.getBoolean("geo_fencing_protection", false), advancedTelemetry = prefs.getBoolean("advanced_telemetry", false), extendedPanicMode = prefs.getBoolean("extended_panic_mode", false), realTimeModemMonitoring = prefs.getBoolean("real_time_modem_monitoring", false)
+        updateRate = prefs.getInt("update_rate", 15), sensitivity = prefs.getInt("sensitivity", 1), logRootFeed = prefs.getBoolean("log_root_feed", false), logRadioMetrics = prefs.getBoolean("log_radio_metrics", false), logSuspiciousEvents = prefs.getBoolean("log_suspicious_events", false), autoPcap = prefs.getBoolean("auto_pcap", true), alarmSound = prefs.getBoolean("alarm_sound", true), alarmVibe = prefs.getBoolean("alarm_vibe", true), beaconDbKey = encryptedPrefs.getString("beacon_db_key", "") ?: "", openCellIdKey = encryptedPrefs.getString("open_cell_id_key", "") ?: "", useBeaconDb = prefs.getBoolean("use_beacon_db", true), useOpenCellId = prefs.getBoolean("use_open_cell_id", false), showBlockedEvents = prefs.getBoolean("show_blocked_events", false), blockGsm = prefs.getBoolean("block_gsm", false), rejectA50 = prefs.getBoolean("reject_a50", false), markFakeCells = prefs.getBoolean("mark_fake_cells", true), forceLte = prefs.getBoolean("force_lte", false), autoMitigation = prefs.getBoolean("auto_mitigation", false), zeroDayProtection = prefs.getBoolean("zero_day_protection", false), geoFencingProtection = prefs.getBoolean("geo_fencing_protection", false), advancedTelemetry = prefs.getBoolean("advanced_telemetry", false), extendedPanicMode = prefs.getBoolean("extended_panic_mode", false), realTimeModemMonitoring = prefs.getBoolean("real_time_modem_monitoring", false), appEnabled = prefs.getBoolean("app_enabled", true)
     )
 
     fun updateUseBeaconDb(value: Boolean) { _settings.update { it.copy(useBeaconDb = value) }; prefs.edit { putBoolean("use_beacon_db", value).apply() } }
@@ -1059,7 +1065,29 @@ class ForensicViewModel(application: Application) : AndroidViewModel(application
             }
         }
     }
-    fun resetRadio() { viewModelScope.launch { if (_dashboardState.value.hasRoot) { 
+
+    fun updateAppEnabled(value: Boolean) { 
+        _settings.update { it.copy(appEnabled = value) }; 
+        prefs.edit { putBoolean("app_enabled", value).apply() }
+        getApplication<Application>().sendBroadcast(Intent("dev.fzer0x.imsicatcherdetector2.SETTINGS_CHANGED").apply { putExtra("appEnabled", value) })
+
+        // Wenn disabled, Service stoppen
+        if (!value) {
+            getApplication<Application>().stopService(Intent(getApplication(), ForensicService::class.java))
+            viewModelScope.launch { _syncStatus.emit("App disabled - Service stopped") }
+        } else {
+            // Wenn enabled, Service starten
+            val serviceIntent = Intent(getApplication(), ForensicService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                getApplication<Application>().startForegroundService(serviceIntent)
+            } else {
+                getApplication<Application>().startService(serviceIntent)
+            }
+            viewModelScope.launch { _syncStatus.emit("App enabled - Service started") }
+        }
+    }
+
+    fun resetRadio() { viewModelScope.launch { if (_dashboardState.value.hasRoot) {
         var result = RootRepository.execute("sentry-ctl --reset-radio")
         if (!result.success) {
             result = RootRepository.execute("/data/adb/modules/sentry_radio_hardening/system/bin/sentry-ctl --reset-radio")
@@ -1205,6 +1233,28 @@ fun triggerForensicDump() { viewModelScope.launch { if (_dashboardState.value.ha
             _syncStatus.emit("Failed to refresh CVE database: ${e.message}")
         }
     } }
-    fun clearLogs() { viewModelScope.launch { forensicDao.clearLogs() } }
-    fun exportLogsToPcap(context: Context) { /* ... */ }
-}
+
+    fun exportLogsToPcap(context: Context) {
+        viewModelScope.launch {
+            try {
+                _syncStatus.emit("Starting PCAP export...")
+
+                val logs = forensicDao.getRecentLogs(1000).first()
+                val pcapFile = File(context.getExternalFilesDir(null), "sentry_logs_${System.currentTimeMillis()}.pcap")
+
+                // Simple PCAP export - this would need proper GSMTAP implementation
+                // For now, just create a placeholder
+                pcapFile.writeText("# GSMTAP PCAP Export\n# Generated by Sentry Radio\n")
+                logs.forEach { log ->
+                    pcapFile.appendText("${log.timestamp}: ${log.description}\n")
+                }
+
+                _syncStatus.emit("PCAP exported to: ${pcapFile.absolutePath}")
+            } catch (e: Exception) {
+                _syncStatus.emit("PCAP export failed: ${e.message}")
+            }
+        }
+    }
+
+        fun clearLogs() { viewModelScope.launch { forensicDao.clearLogs(); _syncStatus.emit("All logs cleared") } }
+    }

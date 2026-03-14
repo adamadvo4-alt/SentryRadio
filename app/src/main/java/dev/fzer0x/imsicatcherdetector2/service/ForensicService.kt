@@ -55,6 +55,13 @@ class ForensicService : Service() {
     // Performance optimization: Batch size
     private val BATCH_SIZE = 50
 
+    // Logcat patterns
+    private val sigPattern = Pattern.compile("(?:rsrp|dbm|rssi)[:=]\\s*(-?\\d+)", Pattern.CASE_INSENSITIVE)
+    private val silentSmsPattern = Pattern.compile("RIL_UNSOL_RESPONSE_NEW_SMS|SMS_ON_CH|SMS_ACK|tp-pid:?\\s*0|SMSC:?\\s*(\\+?\\d+)", Pattern.CASE_INSENSITIVE)
+    private val cipheringPattern = Pattern.compile("Ciphering:?\\s*(OFF|0|NONE)|A5/0|encryption:?\\s*false", Pattern.CASE_INSENSITIVE)
+    private val rejectPattern = Pattern.compile("Location Updating Reject|Cause\\s*#?\\s*(\\d+)", Pattern.CASE_INSENSITIVE)
+    private val downgradePattern = Pattern.compile("RAT changed|NetworkType changed|Handover to GSM", Pattern.CASE_INSENSITIVE)
+
     companion object {
         private val _blockingEventsFlow = MutableSharedFlow<BlockingEvent>(replay = 10, extraBufferCapacity = 50)
         val blockingEventsFlow = _blockingEventsFlow.asSharedFlow()
@@ -126,6 +133,16 @@ class ForensicService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        
+        // Prüfe, ob App enabled ist
+        val prefs = getSharedPreferences("sentry_settings", Context.MODE_PRIVATE)
+        val appEnabled = prefs.getBoolean("app_enabled", true)
+        if (!appEnabled) {
+            Log.d(TAG, "App is disabled - stopping service")
+            stopSelf()
+            return
+        }
+        
         createNotificationChannel()
         startForeground(1, createNotification())
         loadSettingsFromPreferences()
@@ -150,8 +167,8 @@ class ForensicService : Service() {
     @SuppressLint("MissingPermission")
     private fun setupLocationTracking() {
         try {
-            val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 5000L)
-                .setMinUpdateDistanceMeters(10f)
+            val locationRequest = LocationRequest.Builder(Priority.PRIORITY_BALANCED_POWER_ACCURACY, 30000L)
+                .setMinUpdateDistanceMeters(50f)
                 .build()
 
             fusedLocationClient.requestLocationUpdates(locationRequest, locationCallback, Looper.getMainLooper())
@@ -207,7 +224,7 @@ class ForensicService : Service() {
         serviceScope.launch {
             while (isActive) {
                 pullAggressiveRootData()
-                delay(2000)
+                delay(10000)
             }
         }
     }
@@ -349,46 +366,55 @@ class ForensicService : Service() {
         serviceScope.launch {
             try {
                 // Logcat still needs a process, but we run it within our scope
-                logcatProcess = Runtime.getRuntime().exec(arrayOf("su", "-c", "logcat -b radio -b main -v time *:V"))
+                logcatProcess = Runtime.getRuntime().exec(arrayOf("su", "-c", "logcat -b radio -b main -v time | grep -E \"(rsrp|dbm|rssi|RIL_UNSOL_RESPONSE_NEW_SMS|Ciphering|Location Updating Reject|RAT changed)\""))
                 val reader = BufferedReader(InputStreamReader(logcatProcess?.inputStream))
-                val sigPattern = Pattern.compile("(?:rsrp|dbm|rssi)[:=]\\s*(-?\\d+)", Pattern.CASE_INSENSITIVE)
-                val silentSmsPattern = Pattern.compile("RIL_UNSOL_RESPONSE_NEW_SMS|SMS_ON_CH|SMS_ACK|tp-pid:?\\s*0|SMSC:?\\s*(\\+?\\d+)", Pattern.CASE_INSENSITIVE)
-                val cipheringPattern = Pattern.compile("Ciphering:?\\s*(OFF|0|NONE)|A5/0|encryption:?\\s*false", Pattern.CASE_INSENSITIVE)
-                val rejectPattern = Pattern.compile("Location Updating Reject|Cause\\s*#?\\s*(\\d+)", Pattern.CASE_INSENSITIVE)
-                val downgradePattern = Pattern.compile("RAT changed|NetworkType changed|Handover to GSM", Pattern.CASE_INSENSITIVE)
 
                 withContext(Dispatchers.IO) {
+                    val batchSize = 100
+                    val lines = mutableListOf<String>()
                     var line: String? = null
                     while (isActive && reader.readLine().also { line = it } != null) {
-                        val l = line ?: ""; val simSlot = if (l.contains("sub=1") || l.contains("simId=1")) 1 else 0
-
-                        if (cipheringPattern.matcher(l).find() && canProcessAlert("CIPHERING_OFF", simSlot)) {
-                            broadcastAlert("CIPHERING_OFF", 10, "CRITICAL: Encryption disabled (A5/0) on SIM $simSlot!", l, simSlot)
-                            triggerAutoMitigation("A5/0 Cipher Detected", critical = true)
-                        }
-                        val mSilent = silentSmsPattern.matcher(l)
-                        if (mSilent.find() && canProcessAlert("SILENT_SMS", simSlot)) {
-                            var extraInfo = ""
-                            try {
-                                val smsc = mSilent.group(1)
-                                if (smsc != null) extraInfo = " (SMSC: $smsc)"
-                            } catch (e: Exception) {}
-
-                            broadcastAlert("IMSI_CATCHER_ALERT", 9, "SUSPICIOUS: Silent SMS on SIM $simSlot$extraInfo", l, simSlot)
-                            triggerAutoMitigation("Silent SMS Detection")
-                        }
-                        val mRej = rejectPattern.matcher(l); if (mRej.find() && canProcessAlert("NETWORK_REJECT", simSlot)) {
-                            broadcastAlert("IMSI_CATCHER_ALERT", 8, "NETWORK REJECT: Cause #${mRej.group(1)} on SIM $simSlot", l, simSlot)
-                            triggerAutoMitigation("Network Reject Cause")
-                        }
-                        if (downgradePattern.matcher(l).find() && canProcessAlert("CELL_DOWNGRADE", simSlot)) {
-                            broadcastAlert("CELL_DOWNGRADE", 9, "CRITICAL: Network downgrade to GSM on SIM $simSlot", l, simSlot)
-                            triggerAutoMitigation("Unexpected GSM Downgrade")
+                        line?.let { lines.add(it) }
+                        if (lines.size >= batchSize) {
+                            processLogcatBatch(lines)
+                            lines.clear()
                         }
                     }
+                    // Process remaining lines
+                    if (lines.isNotEmpty()) processLogcatBatch(lines)
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Logcat monitor failed", e)
+            }
+        }
+    }
+
+    private fun processLogcatBatch(lines: List<String>) {
+        for (l in lines) {
+            val simSlot = if (l.contains("sub=1") || l.contains("simId=1")) 1 else 0
+
+            if (cipheringPattern.matcher(l).find() && canProcessAlert("CIPHERING_OFF", simSlot)) {
+                broadcastAlert("CIPHERING_OFF", 10, "CRITICAL: Encryption disabled (A5/0) on SIM $simSlot!", l, simSlot)
+                triggerAutoMitigation("A5/0 Cipher Detected", critical = true)
+            }
+            val mSilent = silentSmsPattern.matcher(l)
+            if (mSilent.find() && canProcessAlert("SILENT_SMS", simSlot)) {
+                var extraInfo = ""
+                try {
+                    val smsc = mSilent.group(1)
+                    if (smsc != null) extraInfo = " (SMSC: $smsc)"
+                } catch (e: Exception) {}
+
+                broadcastAlert("IMSI_CATCHER_ALERT", 9, "SUSPICIOUS: Silent SMS on SIM $simSlot$extraInfo", l, simSlot)
+                triggerAutoMitigation("Silent SMS Detection")
+            }
+            val mRej = rejectPattern.matcher(l); if (mRej.find() && canProcessAlert("NETWORK_REJECT", simSlot)) {
+                broadcastAlert("IMSI_CATCHER_ALERT", 8, "NETWORK REJECT: Cause #${mRej.group(1)} on SIM $simSlot", l, simSlot)
+                triggerAutoMitigation("Network Reject Cause")
+            }
+            if (downgradePattern.matcher(l).find() && canProcessAlert("CELL_DOWNGRADE", simSlot)) {
+                broadcastAlert("CELL_DOWNGRADE", 9, "CRITICAL: Network downgrade to GSM on SIM $simSlot", l, simSlot)
+                triggerAutoMitigation("Unexpected GSM Downgrade")
             }
         }
     }
@@ -437,9 +463,9 @@ class ForensicService : Service() {
     }
 
     private fun scheduleHourlyCveUpdate() {
-        val cveUpdateRequest = PeriodicWorkRequestBuilder<CveUpdateWorker>(1, TimeUnit.HOURS)
+        val cveUpdateRequest = PeriodicWorkRequestBuilder<CveUpdateWorker>(6, TimeUnit.HOURS)
             .setConstraints(Constraints.Builder()
-                .setRequiredNetworkType(NetworkType.CONNECTED)
+                .setRequiredNetworkType(NetworkType.UNMETERED)
                 .build())
             .build()
 
@@ -449,7 +475,7 @@ class ForensicService : Service() {
             cveUpdateRequest
         )
 
-        Log.d(TAG, "Scheduled hourly CVE database updates")
+        Log.d(TAG, "Scheduled 6-hourly CVE database updates")
     }
 
     class CveUpdateWorker(appContext: Context, workerParams: WorkerParameters) : CoroutineWorker(appContext, workerParams) {

@@ -14,8 +14,15 @@ class BootReceiver : BroadcastReceiver() {
         if (intent.action == Intent.ACTION_BOOT_COMPLETED || intent.action == "android.intent.action.LOCKED_BOOT_COMPLETED") {
             Log.d(TAG, "Boot completed - starting ForensicService immediately")
 
-            // Aktiviere Security Settings sofort
+            // Prüfe, ob App enabled ist
             val prefs = context.getSharedPreferences("sentry_settings", Context.MODE_PRIVATE)
+            val appEnabled = prefs.getBoolean("app_enabled", true)
+            if (!appEnabled) {
+                Log.d(TAG, "App is disabled - skipping service start")
+                return
+            }
+
+            // Aktiviere Security Settings sofort
             prefs.edit()
                 .putBoolean("block_gsm", true)
                 .putBoolean("reject_a50", true)

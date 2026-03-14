@@ -37,7 +37,7 @@ class WifiBluetoothScanner(private val context: Context) {
     private val scanMutex = Mutex()
 
     @SuppressLint("MissingPermission")
-    suspend fun performQuickScan(durationMs: Long = 5000) = scanMutex.withLock {
+    suspend fun performQuickScan(durationMs: Long = 2000) = scanMutex.withLock {
         Log.d(TAG, "Starting quick hybrid scan for correlation...")
         
         // Start Wi-Fi Scan

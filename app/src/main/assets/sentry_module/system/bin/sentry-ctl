@@ -20,17 +20,17 @@ cache_get() {
     local key="$1"
     local cache_file="$CACHE_DIR/${key}.cache"
     local meta_file="$CACHE_DIR/${key}.meta"
-    
+
     if [ -f "$cache_file" ] && [ -f "$meta_file" ]; then
         local file_age=$(($(date +%s) - $(stat -c %Y "$cache_file" 2>/dev/null || echo 0)))
         if [ $file_age -lt $CACHE_TTL ]; then
             # Read metadata for access tracking
             local access_count=$(cat "$meta_file" 2>/dev/null | cut -d: -f1 || echo "0")
             local last_access=$(cat "$meta_file" 2>/dev/null | cut -d: -f2 || echo "$(date +%s)")
-            
+
             # Update access statistics
             echo "$((access_count + 1)):$(date +%s)" > "$meta_file"
-            
+
             CACHE_HITS=$((CACHE_HITS + 1))
             cat "$cache_file" 2>/dev/null
             return 0
@@ -39,7 +39,7 @@ cache_get() {
             rm -f "$cache_file" "$meta_file"
         fi
     fi
-    
+
     CACHE_MISSES=$((CACHE_MISSES + 1))
     return 1
 }
@@ -49,13 +49,13 @@ cache_set() {
     local value="$2"
     local cache_file="$CACHE_DIR/${key}.cache"
     local meta_file="$CACHE_DIR/${key}.meta"
-    
+
     # Check cache size limit
     local current_size=$(find "$CACHE_DIR" -name "*.cache" | wc -l)
     if [ $current_size -ge $MAX_CACHE_SIZE ]; then
         cache_cleanup
     fi
-    
+
     echo "$value" > "$cache_file"
     echo "1:$(date +%s)" > "$meta_file"
     chmod 600 "$cache_file" "$meta_file"
@@ -64,7 +64,7 @@ cache_set() {
 # Intelligent cache cleanup with LRU+LFU eviction
 cache_cleanup() {
     local now=$(date +%s)
-    
+
     # Create temporary file with cache entries and their scores
     find "$CACHE_DIR" -name "*.meta" -exec sh -c '
         meta_file="$1"
@@ -79,12 +79,12 @@ cache_cleanup() {
             echo "$score:$key"
         fi
     ' sh {} \; | sort -n | head -n $((MAX_CACHE_SIZE / 10)) | cut -d: -f2 > /tmp/cache_cleanup.tmp
-    
+
     # Remove least useful entries
     while IFS= read -r key; do
         rm -f "$CACHE_DIR/${key}.cache" "$CACHE_DIR/${key}.meta"
     done < /tmp/cache_cleanup.tmp
-    
+
     rm -f /tmp/cache_cleanup.tmp
     log_action "Cache cleanup completed"
 }
@@ -115,30 +115,30 @@ case $COMMAND in
             settings put global preferred_network_mode 22  # NR_SA only
             settings put global preferred_network_mode1 22
             settings put global preferred_network_mode2 22
-            
+
             # Disable ENDC (E-UTRA-NR Dual Connectivity) for SA only
             setprop persist.vendor.radio.endc_support 0
             setprop persist.radio.endc_support 0
             setprop persist.vendor.radio.enable_nr_advanced 1
-            
+
             # Force NR standalone
             setprop persist.vendor.radio.nr_standalone 1
             setprop persist.radio.nr_standalone 1
-            
+
             # Broadcast hardware forcing event to app
             am broadcast -a dev.fzer0x.sentry.HARDWARE_BLOCKING --es blockType "5G_SA_FORCE" --es description "Hardware-level 5G Standalone-only mode enabled" --ei severity 6 --ei simSlot 0
         else
             log_action "Restoring default 5G mode"
             settings put global preferred_network_mode 9  # Auto mode
-            
+
             # Re-enable ENDC
             setprop persist.vendor.radio.endc_support 1
             setprop persist.radio.endc_support 1
-            
+
             # Clear SA forcing
             setprop persist.vendor.radio.nr_standalone 0
             setprop persist.radio.nr_standalone 0
-            
+
             # Broadcast hardware forcing event to app
             am broadcast -a dev.fzer0x.sentry.HARDWARE_BLOCKING --es blockType "5G_SA_FORCE" --es description "Hardware-level 5G Standalone-only mode disabled" --ei severity 6 --ei simSlot 0
         fi
@@ -150,28 +150,28 @@ case $COMMAND in
             settings put global preferred_network_mode 21  # NR_NSA only
             settings put global preferred_network_mode1 21
             settings put global preferred_network_mode2 21
-            
+
             # Enable ENDC for NSA
             setprop persist.vendor.radio.endc_support 1
             setprop persist.radio.endc_support 1
             setprop persist.vendor.radio.enable_nr_advanced 1
-            
+
             # Force NR NSA
             setprop persist.vendor.radio.nr_nsa 1
             setprop persist.radio.nr_nsa 1
             setprop persist.vendor.radio.nr_standalone 0
             setprop persist.radio.nr_standalone 0
-            
+
             # Broadcast hardware forcing event to app
             am broadcast -a dev.fzer0x.sentry.HARDWARE_BLOCKING --es blockType "5G_NSA_FORCE" --es description "Hardware-level 5G Non-Standalone mode enabled" --ei severity 6 --ei simSlot 0
         else
             log_action "Restoring default 5G mode"
             settings put global preferred_network_mode 9  # Auto mode
-            
+
             # Clear NSA forcing
             setprop persist.vendor.radio.nr_nsa 0
             setprop persist.radio.nr_nsa 0
-            
+
             # Broadcast hardware forcing event to app
             am broadcast -a dev.fzer0x.sentry.HARDWARE_BLOCKING --es blockType "5G_NSA_FORCE" --es description "Hardware-level 5G Non-Standalone mode disabled" --ei severity 6 --ei simSlot 0
         fi
@@ -183,7 +183,7 @@ case $COMMAND in
         echo "NR Advanced: $(getprop persist.vendor.radio.enable_nr_advanced)"
         echo "Current Network Type: $(dumpsys telephony.registry | grep -E 'mDataNetworkType|mNetworkType' | head -1 | cut -d= -f2)"
         echo "NR Status: $(dumpsys telephony.registry | grep -i 'nr' | head -3)"
-        
+
         # Get detailed 5G metrics if available
         if [ "$(getprop persist.sentry.advanced_telemetry)" = "1" ]; then
             echo ""
@@ -193,7 +193,7 @@ case $COMMAND in
             echo "NR State: $(dumpsys telephony.registry | grep -i 'nr.*state' | head -1 | cut -d= -f2)"
             echo "Duplex Mode: $(dumpsys telephony.registry | grep -i 'duplex' | head -1 | cut -d= -f2)"
             echo "SCS (kHz): $(dumpsys telephony.registry | grep -i 'scs' | head -1 | grep -o '[0-9]\+' | head -1)"
-            
+
             # 5G Signal Quality Metrics
             echo "NR RSRP: $(getprop vendor.radio.nr_rsrp)"
             echo "NR RSRQ: $(getprop vendor.radio.nr_rsrq)"
@@ -201,7 +201,7 @@ case $COMMAND in
             echo "NR SSB RSRP: $(getprop vendor.radio.nr_ssb_rsrp)"
             echo "NR SSB RSRQ: $(getprop vendor.radio.nr_ssb_rsrq)"
             echo "NR SSB SINR: $(getprop vendor.radio.nr_ssb_sinr)"
-            
+
             # mmWave Detection
             NR_ARFCN=$(dumpsys telephony.registry | grep -i 'nrarfcn' | head -1 | grep -o '[0-9]\+' | head -1)
             if [ -n "$NR_ARFCN" ]; then
@@ -219,13 +219,13 @@ case $COMMAND in
             settings put global preferred_network_mode 11
             settings put global preferred_network_mode1 11
             settings put global preferred_network_mode2 11
-            
+
             # Broadcast hardware forcing event to app
             am broadcast -a dev.fzer0x.sentry.HARDWARE_BLOCKING --es blockType "LTE_FORCE" --es description "Hardware-level LTE-only mode enabled" --ei severity 6 --ei simSlot 0
         else
             log_action "Restoring default network"
             settings put global preferred_network_mode 9
-            
+
             # Broadcast hardware forcing event to app
             am broadcast -a dev.fzer0x.sentry.HARDWARE_BLOCKING --es blockType "LTE_FORCE" --es description "Hardware-level LTE-only mode disabled" --ei severity 6 --ei simSlot 0
         fi
@@ -303,7 +303,7 @@ case $COMMAND in
         setprop persist.radio.block_cdma 1
         setprop persist.vendor.radio.enable 0
         setprop persist.vendor.radio.modem_power 0
-        
+
         # Enhanced Network Isolation with Android APIs
         log_action "Implementing Android network isolation..."
         # Disable all network adapters through Android APIs
@@ -335,7 +335,7 @@ case $COMMAND in
         else
             log_action "ip6tables OUTPUT failed - using Android alternatives"
         fi
-        
+
         # Hardware-level radio shutdown
         log_action "Performing hardware radio shutdown..."
         # Direct modem power management through sysfs
@@ -343,11 +343,11 @@ case $COMMAND in
         echo 0 > /sys/class/rfkill/rfkill1/state 2>/dev/null || log_action "rfkill1 not available"
         # Force modem shutdown through Qualcomm-specific interfaces
         echo 0 > /sys/devices/platform/soc/soc:qcom,mdm/subsys0/restart 2>/dev/null || log_action "Qualcomm modem restart interface not available"
-        
+
         # Persistent panic state
         setprop persist.sentry.panic_extended_active 1
         setprop persist.sentry.panic_extended_timestamp $(date +%s)
-        
+
         # Broadcast emergency to app
         am broadcast -a dev.fzer0x.sentry.EMERGENCY --es threat_type "EXTENDED_PANIC" --es severity "CRITICAL"
         log_action "EXTENDED PANIC COMPLETE - Full system lockdown active"
@@ -355,7 +355,7 @@ case $COMMAND in
     "--block-2g")
         CURRENT_VALUE=$(getprop persist.radio.block_gsm)
         setprop persist.radio.block_gsm $([ "$VALUE" == "true" ] && echo 1 || echo 0)
-        
+
         # Broadcast hardware blocking event to app
         if [ "$CURRENT_VALUE" != "$([ "$VALUE" == "true" ] && echo 1 || echo 0)" ]; then
             am broadcast -a dev.fzer0x.sentry.HARDWARE_BLOCKING --es blockType "GSM_BLOCK" --es description "Hardware-level GSM blocking ${VALUE}" --ei severity 8 --ei simSlot 0
@@ -364,7 +364,7 @@ case $COMMAND in
     "--reject-a50")
         CURRENT_VALUE=$(getprop persist.radio.reject_a50)
         setprop persist.radio.reject_a50 $([ "$VALUE" == "true" ] && echo 1 || echo 0)
-        
+
         # Broadcast hardware blocking event to app
         if [ "$CURRENT_VALUE" != "$([ "$VALUE" == "true" ] && echo 1 || echo 0)" ]; then
             am broadcast -a dev.fzer0x.sentry.HARDWARE_BLOCKING --es blockType "A5/0_REJECT" --es description "Hardware-level A5/0 cipher rejection ${VALUE}" --ei severity 10 --ei simSlot 0
@@ -372,7 +372,7 @@ case $COMMAND in
         ;;
     "--telemetry")
         echo "--- Snapdragon Modem Telemetry ---"
-        
+
         # Performance optimization: Use cache for telemetry data
         local cache_key="telemetry_$(date +%M)" # Cache per minute
         local cached_result
@@ -380,7 +380,7 @@ case $COMMAND in
             echo "$cached_result"
             return 0
         fi
-        
+
         # Get encryption algorithm
         ALGO=$(getprop vendor.radio.cipher_algo)
         [ -z "$ALGO" ] && ALGO="A5/3 (Likely)"
@@ -394,56 +394,56 @@ case $COMMAND in
         echo "Signal-RSRP: $(getprop vendor.radio.rsrp)"
         echo "Signal-SNR: $(getprop vendor.radio.snr)"
         echo "Baseband-Temp: $(getprop vendor.modem.temp)"
-        
+
         # Cache the result
         local result="Algorithm: $ALGO\nRRC State: $RRC\nSignal-RSRP: $(getprop vendor.radio.rsrp)\nSignal-SNR: $(getprop vendor.radio.snr)\nBaseband-Temp: $(getprop vendor.modem.temp)"
         cache_set "$cache_key" "$result"
-        
+
         # Advanced telemetry if enabled
         if [ "$(getprop persist.sentry.advanced_telemetry)" = "1" ]; then
             echo ""
             echo "--- Advanced Telemetry Data ---"
-            
+
             # Modem firmware information
             echo "Modem Firmware: $(getprop ro.baseband)"
             echo "Modem Version: $(getprop gsm.version.baseband)"
-            
+
             # Network registration details
             echo "Registered Network: $(dumpsys telephony.registry | grep mNetworkOperator | head -1 | cut -d= -f2)"
             echo "Network Type: $(dumpsys telephony.registry | grep mNetworkType | head -1 | cut -d= -f2)"
-            
+
             # Cell tower details
             echo "Cell ID: $(dumpsys telephony.registry | grep mCid | head -1 | cut -d= -f2)"
             echo "LAC/TAC: $(dumpsys telephony.registry | grep mLac | head -1 | cut -d= -f2)"
             echo "PCI: $(dumpsys telephony.registry | grep mPci | head -1 | cut -d= -f2)"
-            
+
             # Signal quality metrics
             echo "RSRP: $(dumpsys telephony.registry | grep mSignalStrength | head -1 | cut -d= -f2)"
             echo "RSRQ: $(getprop vendor.radio.rsrq)"
             echo "RSSI: $(getprop vendor.radio.rssi)"
-            
+
             # Data connection status
             echo "Data State: $(dumpsys telephony.registry | grep mDataConnectionState | head -1 | cut -d= -f2)"
             echo "Data Activity: $(dumpsys telephony.registry | grep mDataActivity | head -1 | cut -d= -f2)"
-            
+
             # SIM card information
             echo "SIM State: $(dumpsys telephony.registry | grep mSimState | head -1 | cut -d= -f2)"
             echo "SIM Operator: $(dumpsys telephony.registry | grep mSimOperator | head -1 | cut -d= -f2)"
-            
+
             # Security-related metrics
             echo "Ciphering Enabled: $(getprop persist.radio.ciphering_enabled)"
             echo "A5/0 Rejection: $(getprop persist.radio.reject_a50)"
             echo "GSM Blocking: $(getprop persist.radio.block_gsm)"
-            
+
             # System health metrics
             echo "RIL Daemon Status: $(getprop init.svc.ril-daemon)"
             echo "Modem Power: $(getprop persist.vendor.radio.modem_power)"
             echo "Radio Enabled: $(getprop persist.vendor.radio.enable)"
-            
+
             # Performance metrics
             RIL_MEMORY=$(ps -A | grep rild | awk '{print $6}' | head -1)
             echo "RIL Memory Usage: ${RIL_MEMORY:-0}KB"
-            
+
             # Error counts
             echo "RIL Errors: $(dmesg | grep -i ril | grep -i error | wc -l)"
             echo "Modem Restarts: $(dmesg | grep -i modem | grep -i restart | wc -l)"
@@ -469,24 +469,24 @@ case $COMMAND in
         TEMP=$(getprop vendor.modem.temp)
         [ -z "$TEMP" ] && TEMP="N/A"
         echo "Baseband Temperature: $TEMP°C"
-        
+
         # RIL Command Queue Status
         RIL_QUEUE=$(dumpsys telephony.registry | grep -i "m ril" | head -3)
         echo "RIL Queue Status:"
         echo "$RIL_QUEUE"
-        
+
         # Unexpected RIL Responses
         echo "Checking for unexpected RIL responses..."
         dmesg | grep -i "ril\|modem" | tail -5
-        
+
         # Memory Usage Check
         RIL_MEM=$(ps -A | grep -E "(rild|qcril)" | awk '{sum+=$6} END {print sum+0}')
         echo "RIL Memory Usage: ${RIL_MEM}KB"
-        
+
         # Modem Register States
         echo "Modem Register States:"
         getprop | grep -E "ril\.|radio\.|modem\." | tail -10
-        
+
         # Continuous monitoring option
         if [ "$VALUE" == "continuous" ]; then
             echo "Starting continuous monitoring (Ctrl+C to stop)..."
@@ -549,22 +549,22 @@ case $COMMAND in
         echo "--- Advanced Forensic Data Dump ---"
         DUMP_DIR="/data/local/tmp/sentry_forensic_$(date +%Y%m%d_%H%M%S)"
         mkdir -p "$DUMP_DIR"
-        
+
         echo "Collecting RIL Message Timeline..."
         dumpsys telephony.registry > "$DUMP_DIR/telephony_registry.txt"
-        
+
         echo "Collecting Baseband Register States..."
         getprop | grep -E "ril\.|radio\.|modem\." > "$DUMP_DIR/modem_properties.txt"
-        
+
         echo "Collecting Radio Frequency Analysis..."
         dumpsys radio > "$DUMP_DIR/radio_dump.txt"
-        
+
         echo "Collecting Protocol Stack Traces..."
         dmesg | grep -i "ril\|modem\|radio" > "$DUMP_DIR/kernel_logs.txt"
-        
+
         echo "Collecting Network Statistics..."
         cat /proc/net/dev > "$DUMP_DIR/network_stats.txt"
-        
+
         echo "Forensic dump completed: $DUMP_DIR"
         echo "Files created: $(ls -la "$DUMP_DIR" | wc -l)"
         ;;
@@ -603,13 +603,13 @@ case $COMMAND in
             COMMAND_VALIDATION=$(getprop persist.vendor.radio.validate_commands)
             LAST_SYNC=$(getprop persist.sentry.last_cve_sync)
             SYNC_INTERVAL=$(getprop persist.sentry.cve_sync_interval)
-            
+
             echo "Protection Status: $PROTECTION_STATUS"
             echo "Dynamic Patching: $DYNAMIC_PATCH"
             echo "Command Validation: $COMMAND_VALIDATION"
             echo "Last CVE Sync: $LAST_SYNC ($(date -d @$LAST_SYNC 2>/dev/null || echo 'Invalid timestamp'))"
             echo "Sync Interval: ${SYNC_INTERVAL}s ($(echo "$SYNC_INTERVAL/3600" | bc)h)"
-            
+
             # Check if sync is needed
             CURRENT_TIME=$(date +%s)
             TIME_SINCE_SYNC=$((CURRENT_TIME - LAST_SYNC))

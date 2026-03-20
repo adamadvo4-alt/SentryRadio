@@ -15,6 +15,9 @@ import androidx.core.app.NotificationCompat
 import com.google.android.gms.location.*
 import dev.fzer0x.imsicatcherdetector2.MainActivity
 import dev.fzer0x.imsicatcherdetector2.security.RootRepository
+import dev.fzer0x.imsicatcherdetector2.security.StationaryCellMonitor
+import dev.fzer0x.imsicatcherdetector2.security.SignalInconsistencyMonitor
+import dev.fzer0x.imsicatcherdetector2.security.NeighborConsistencyMonitor
 import dev.fzer0x.imsicatcherdetector2.security.VulnerabilityManager
 import androidx.work.*
 import androidx.core.content.edit
@@ -49,9 +52,13 @@ class ForensicService : Service() {
     private var extendedPanicMode = false
     private var isHardeningModuleActive = false
 
+    private val stationaryCellMonitor = StationaryCellMonitor()
+    private val signalMonitor = SignalInconsistencyMonitor()
+    private val neighborMonitor = NeighborConsistencyMonitor()
+
     private val processedCriticalAlerts = mutableMapOf<String, Long>()
     private val CRITICAL_ALERT_COOLDOWN = 5000L
-    
+
     // Performance optimization: Batch size
     private val BATCH_SIZE = 50
 
@@ -133,7 +140,7 @@ class ForensicService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        
+
         // Prüfe, ob App enabled ist
         val prefs = getSharedPreferences("sentry_settings", Context.MODE_PRIVATE)
         val appEnabled = prefs.getBoolean("app_enabled", true)
@@ -142,7 +149,7 @@ class ForensicService : Service() {
             stopSelf()
             return
         }
-        
+
         createNotificationChannel()
         startForeground(1, createNotification())
         loadSettingsFromPreferences()
@@ -247,7 +254,9 @@ class ForensicService : Service() {
             val networkType = extractNetworkType(slotSection, slot)
 
             if (cid != null && mcc != null && mnc != null) {
-                broadcastForensicData(pci, earfcn, cid, dbm, null, mcc, mnc, tac, slot, networkType, isNeighbor = false)
+                // Determine neighbor count for this slot
+                val neighborsCount = output.lines().count { it.contains("mCellInfo") && it.contains("[$slot]") && !it.contains("mRegistered=true") }
+                broadcastForensicData(pci, earfcn, cid, dbm, neighborsCount, mcc, mnc, tac, slot, networkType, isNeighbor = false)
             }
         }
 
@@ -450,6 +459,47 @@ class ForensicService : Service() {
         tac?.let { intent.putExtra("tac", it) }; pci?.let { intent.putExtra("pci", it) }; earfcn?.let { intent.putExtra("earfcn", it) }
         dbm?.let { intent.putExtra("dbm", it) }; neighbors?.let { intent.putExtra("neighbors", it) }; networkType?.let { intent.putExtra("networkType", it) }
         sendBroadcast(intent)
+
+        // B1: Stationary Cell Monitoring
+        if (!isNeighbor && cid != null && networkType != null) {
+            lastServiceLocation?.let { location ->
+                if (stationaryCellMonitor.update(location, cid, networkType)) {
+                    broadcastAlert(
+                        "STATIONARY_CELL_CHANGE",
+                        7,
+                        "SUSPICIOUS: Cell changed to $cid while device is stationary (IMSI Catcher activity suspect)",
+                        "Location: ${location.latitude}, ${location.longitude}",
+                        simSlot
+                    )
+                }
+            }
+        }
+
+        // B2: Signal Inconsistency Monitor
+        if (!isNeighbor && dbm != null) {
+            if (signalMonitor.analyze(simSlot, dbm, null)) {
+                broadcastAlert(
+                    "SIGNAL_INCONSISTENCY",
+                    6,
+                    "SUSPICIOUS: Signal anomaly detected (${dbm}dBm) on SIM $simSlot",
+                    "Possible high-power fake cell nearby",
+                    simSlot
+                )
+            }
+        }
+
+        // B3: Neighbor Cell Inconsistency
+        if (!isNeighbor && neighbors != null && dbm != null) {
+            if (neighborMonitor.analyze(simSlot, neighbors, dbm)) {
+                broadcastAlert(
+                    "NEIGHBOR_INCONSISTENCY",
+                    6,
+                    "SUSPICIOUS: Neighbor cell inconsistency detected on SIM $simSlot",
+                    "Cell has $neighbors neighbors with ${dbm}dBm signal",
+                    simSlot
+                )
+            }
+        }
     }
 
     private fun createNotificationChannel() {

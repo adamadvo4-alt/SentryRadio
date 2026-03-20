@@ -29,6 +29,7 @@ import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.util.concurrent.Executors
 import java.util.regex.Pattern
+import com.topjohnwu.superuser.Shell
 
 data class BlockingEvent(
     val timestamp: Long = System.currentTimeMillis(),
@@ -43,6 +44,7 @@ class ForensicService : Service() {
     private val TAG = "ForensicService"
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var logcatProcess: Process? = null
+    private var logcatShell: Shell? = null
     private lateinit var wifiBluetoothScanner: WifiBluetoothScanner
     private lateinit var fusedLocationClient: FusedLocationProviderClient
 
@@ -374,23 +376,20 @@ class ForensicService : Service() {
     private fun startRootLogcatMonitor() {
         serviceScope.launch {
             try {
-                // Logcat still needs a process, but we run it within our scope
-                logcatProcess = Runtime.getRuntime().exec(arrayOf("su", "-c", "logcat -b radio -b main -v time | grep -E \"(rsrp|dbm|rssi|RIL_UNSOL_RESPONSE_NEW_SMS|Ciphering|Location Updating Reject|RAT changed)\""))
-                val reader = BufferedReader(InputStreamReader(logcatProcess?.inputStream))
-
+                // Use libsu for stable and performant logcat monitoring
+                val command = "logcat -b radio -b main -v time | grep -E \"(rsrp|dbm|rssi|RIL_UNSOL_RESPONSE_NEW_SMS|Ciphering|Location Updating Reject|RAT changed)\""
+                
                 withContext(Dispatchers.IO) {
-                    val batchSize = 100
-                    val lines = mutableListOf<String>()
-                    var line: String? = null
-                    while (isActive && reader.readLine().also { line = it } != null) {
-                        line?.let { lines.add(it) }
-                        if (lines.size >= batchSize) {
-                            processLogcatBatch(lines)
-                            lines.clear()
+                    val streamingList = object : ArrayList<String>() {
+                        override fun add(element: String): Boolean {
+                            processLogcatBatch(listOf(element))
+                            return false // Don't store the line to save memory
                         }
                     }
-                    // Process remaining lines
-                    if (lines.isNotEmpty()) processLogcatBatch(lines)
+                    
+                    // Create a dedicated shell for logcat to avoid blocking the main shell
+                    logcatShell = Shell.Builder.create().build()
+                    logcatShell?.newJob()?.add(command)?.to(streamingList)?.exec()
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Logcat monitor failed", e)
@@ -563,6 +562,7 @@ class ForensicService : Service() {
     override fun onDestroy() {
         try { fusedLocationClient.removeLocationUpdates(locationCallback) } catch (e: Exception) {}
         unregisterReceiver(settingsReceiver); unregisterReceiver(blockingEventReceiver); unregisterReceiver(commandReceiver)
+        logcatShell?.close()
         logcatProcess?.destroy()
         serviceScope.cancel()
         super.onDestroy()

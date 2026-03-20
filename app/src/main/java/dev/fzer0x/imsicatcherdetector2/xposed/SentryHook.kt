@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
 import android.os.Message
+import android.os.Parcel
 import android.os.UserHandle
 import android.telephony.TelephonyManager
 import android.telephony.SubscriptionManager
@@ -61,7 +62,7 @@ class SentryHook : IXposedHookLoadPackage {
     private var cacheHits = 0L
     private var cacheMisses = 0L
     
-    // Precompiled regex patterns for ciphering detection
+    // Precompiled regex patterns for ciphering detection (Fallback)
     private val cipheringPatterns = listOf(
         "CIPHERING\\s*[:=]\\s*OFF".toRegex(),
         "CIPHERING\\s*[:=]\\s*0".toRegex(),
@@ -71,6 +72,12 @@ class SentryHook : IXposedHookLoadPackage {
         "NO\\s*CIPHER".toRegex(),
         "CIPHER\\s*DISABLED".toRegex()
     )
+
+    // RIL Unsolicited Response Constants
+    private val RIL_UNSOL_RESPONSE_NEW_SMS = 1003
+    private val RIL_UNSOL_ON_SS = 1015
+    private val RIL_UNSOL_STK_CC_ALPHA_NOTIFY = 1044
+    private val RIL_UNSOL_CIPHERING_INFO = 1042 // Qualcomm specific common ID
 
     override fun handleLoadPackage(lpparam: LoadPackageParam) {
         if (lpparam.packageName == "android") {
@@ -148,10 +155,18 @@ class SentryHook : IXposedHookLoadPackage {
             val rilClass = XposedHelpers.findClass("com.android.internal.telephony.RIL", lpparam.classLoader)
             XposedBridge.hookAllMethods(rilClass, "processUnsolicited", object : XC_MethodHook() {
                 override fun beforeHookedMethod(param: MethodHookParam) {
-                    if (!appEnabled.get()) return // App disabled - skip all processing
+                    if (!appEnabled.get()) return 
                     
-                    val response = param.args[0] ?: return
-                    val respStr = response.toString().uppercase()
+                    val responseArg = param.args[0] ?: return
+                    
+                    // Native Parcel Parsing (Manufacturer Consistent)
+                    if (responseArg is Parcel) {
+                        parseRilParcel(param.thisObject, responseArg)
+                        // Note: We don't return here to allow the fallback string check to run 
+                        // in case parcel parsing logic is incomplete for specific vendors.
+                    }
+
+                    val respStr = responseArg.toString().uppercase()
                     
                     // Performance optimization: Enhanced cache with precompiled patterns
                     val cacheKey = "cipher_${respStr.hashCode()}"
@@ -186,71 +201,7 @@ class SentryHook : IXposedHookLoadPackage {
                     }
 
                     if (isCipheringOff) {
-                        val context = XposedHelpers.getObjectField(param.thisObject, "mContext") as Context
-                        XposedBridge.log("SentryHook: CRITICAL - Unencrypted connection detected! Response: $respStr")
-
-                        val intent = Intent().apply {
-                            putExtra("eventType", "CIPHERING_OFF")
-                            putExtra("description", "CRITICAL: Encryption disabled (A5/0) detected via RIL!")
-                            putExtra("severity", 10)
-                        }
-                        sendForensicBroadcast(context, intent)
-
-                        if (rejectA50.get()) {
-                            XposedBridge.log("SentryHook: SECURITY POLICY - Initiating controlled disconnect & reconnect to prevent A5/0 exploit.")
-                            
-                            // Extract SIM slot from context or use default
-                            val simSlot = try {
-                                val telephonyManager = context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
-                                // Use subscription manager to get SIM slot info
-                                val subscriptionManager = context.getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE) as SubscriptionManager
-                                val activeSubscription = try {
-                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
-                                        subscriptionManager.activeSubscriptionInfoList?.firstOrNull()
-                                    } else {
-                                        null
-                                    }
-                                } catch (e: Exception) {
-                                    null
-                                }
-                                activeSubscription?.simSlotIndex ?: 0
-                            } catch (e: Exception) {
-                                0 // Default to SIM 0 if extraction fails
-                            }
-                            
-                            // Record A5/0 blocking event for Audit Log
-                            try {
-                                val blockingIntent = Intent("dev.fzer0x.imsicatcherdetector2.RECORD_BLOCKING_EVENT")
-                                blockingIntent.setPackage("dev.fzer0x.imsicatcherdetector2")
-                                blockingIntent.putExtra("blockType", "A5/0_CIPHER_REJECTION")
-                                blockingIntent.putExtra("description", "A5/0 unencrypted connection blocked and forced reconnect on SIM $simSlot")
-                                blockingIntent.putExtra("severity", 10)
-                                blockingIntent.putExtra("simSlot", simSlot)
-                                context.sendBroadcast(blockingIntent)
-                            } catch (e: Exception) {
-                                XposedBridge.log("SentryHook: Failed to record A5/0 blocking event: ${e.message}")
-                            }
-                            
-                            try {
-                                val phone = XposedHelpers.getObjectField(param.thisObject, "mPhone")
-
-                                // Temporär Radio ausschalten und dann nach 3 Sekunden wieder einschalten
-                                val thread = Thread {
-                                    try {
-                                        XposedHelpers.callMethod(phone, "setRadioPower", false)
-                                        Thread.sleep(3000)
-                                        XposedHelpers.callMethod(phone, "setRadioPower", true)
-                                        XposedBridge.log("SentryHook: Radio recovered - attempting reconnection with forced ciphering")
-                                    } catch (e: Exception) {
-                                        XposedBridge.log("SentryHook: Recovery error: ${e.message}")
-                                    }
-                                }
-                                thread.isDaemon = true
-                                thread.start()
-                            } catch (e: Exception) {
-                                XposedBridge.log("SentryHook: Error initiating A5/0 rejection: ${e.message}")
-                            }
-                        }
+                        triggerCipheringAlert(param.thisObject, "Regex Detection: $respStr")
                     }
                 }
             })
@@ -259,12 +210,89 @@ class SentryHook : IXposedHookLoadPackage {
         }
     }
 
+    private fun parseRilParcel(rilObject: Any, p: Parcel) {
+        val pos = p.dataPosition()
+        try {
+            val responseId = p.readInt()
+            
+            when (responseId) {
+                RIL_UNSOL_CIPHERING_INFO -> {
+                    // Qualcomm/Standard Ciphering Info structure
+                    // Usually: [int status] where 0 = OFF, 1 = ON
+                    val status = p.readInt()
+                    if (status == 0) {
+                        XposedBridge.log("SentryHook: NATIVE RIL PARCEL - Ciphering OFF detected (ID: $responseId)")
+                        triggerCipheringAlert(rilObject, "Native RIL Parcel (ID: $responseId, Status: $status)")
+                    }
+                }
+                RIL_UNSOL_ON_SS -> {
+                    // Supplementary Service notification - can contain ciphering related status
+                    // Parsing this requires deeper ASN.1/Vendor knowledge, 
+                    // but we can look for specific indicators in the parcel data
+                }
+            }
+        } catch (e: Exception) {
+            // Silently fail parcel parsing to not crash RIL
+        } finally {
+            p.setDataPosition(pos)
+        }
+    }
+
+    private fun triggerCipheringAlert(rilObject: Any, sourceInfo: String) {
+        try {
+            val context = XposedHelpers.getObjectField(rilObject, "mContext") as Context
+            XposedBridge.log("SentryHook: CRITICAL - Unencrypted connection detected! Source: $sourceInfo")
+
+            val intent = Intent().apply {
+                putExtra("eventType", "CIPHERING_OFF")
+                putExtra("description", "CRITICAL: Encryption disabled (A5/0) detected via Native RIL!")
+                putExtra("severity", 10)
+            }
+            sendForensicBroadcast(context, intent)
+
+            if (rejectA50.get()) {
+                XposedBridge.log("SentryHook: SECURITY POLICY - Initiating controlled disconnect & reconnect.")
+                
+                val simSlot = try {
+                    val phone = XposedHelpers.getObjectField(rilObject, "mPhone")
+                    XposedHelpers.callMethod(phone, "getPhoneId") as Int
+                } catch (e: Exception) { 0 }
+                
+                // Record A5/0 blocking event
+                try {
+                    val blockingIntent = Intent("dev.fzer0x.imsicatcherdetector2.RECORD_BLOCKING_EVENT")
+                    blockingIntent.setPackage("dev.fzer0x.imsicatcherdetector2")
+                    blockingIntent.putExtra("blockType", "A5/0_CIPHER_REJECTION")
+                    blockingIntent.putExtra("description", "A5/0 unencrypted connection blocked on SIM $simSlot ($sourceInfo)")
+                    blockingIntent.putExtra("severity", 10)
+                    blockingIntent.putExtra("simSlot", simSlot)
+                    context.sendBroadcast(blockingIntent)
+                } catch (e: Exception) {}
+                
+                try {
+                    val phone = XposedHelpers.getObjectField(rilObject, "mPhone")
+                    val thread = Thread {
+                        try {
+                            XposedHelpers.callMethod(phone, "setRadioPower", false)
+                            Thread.sleep(3000)
+                            XposedHelpers.callMethod(phone, "setRadioPower", true)
+                        } catch (e: Exception) {}
+                    }
+                    thread.isDaemon = true
+                    thread.start()
+                } catch (e: Exception) {}
+            }
+        } catch (e: Exception) {
+            XposedBridge.log("SentryHook: Failed to trigger ciphering alert: ${e.message}")
+        }
+    }
+
     private fun hookServiceStateTracker(lpparam: LoadPackageParam) {
         try {
             val sstClass = XposedHelpers.findClass("com.android.internal.telephony.ServiceStateTracker", lpparam.classLoader)
             XposedHelpers.findAndHookMethod(sstClass, "handleMessage", Message::class.java, object : XC_MethodHook() {
                 override fun afterHookedMethod(param: MethodHookParam) {
-                    if (!appEnabled.get()) return // App disabled - skip all processing
+                    if (!appEnabled.get()) return 
                     
                     val mSST = param.thisObject
                     val phone = XposedHelpers.getObjectField(mSST, "mPhone")
@@ -292,7 +320,7 @@ class SentryHook : IXposedHookLoadPackage {
                                         }
                                         sendForensicBroadcast(context, intent)
                                         
-                                        // Record network reject as blocked event for Audit Log
+                                        // Record network reject as blocked event
                                         try {
                                             val blockingIntent = Intent("dev.fzer0x.imsicatcherdetector2.RECORD_BLOCKING_EVENT")
                                             blockingIntent.setPackage("dev.fzer0x.imsicatcherdetector2")
@@ -301,9 +329,7 @@ class SentryHook : IXposedHookLoadPackage {
                                             blockingIntent.putExtra("severity", 9)
                                             blockingIntent.putExtra("simSlot", simSlot)
                                             context.sendBroadcast(blockingIntent)
-                                        } catch (e: Exception) {
-                                            XposedBridge.log("SentryHook: Failed to record network reject blocking event: ${e.message}")
-                                        }
+                                        } catch (e: Exception) {}
                                     }
                                 }
                             }
@@ -313,20 +339,12 @@ class SentryHook : IXposedHookLoadPackage {
                     if (blockGsm.get() && isGsmRat(ss)) {
                         XposedBridge.log("SentryHook: GSM Detected - Blocking GSM connection on SIM $simSlot")
 
-                        // Method 1: Set OUT_OF_SERVICE
-                        try {
-                            XposedHelpers.callMethod(ss, "setState", ServiceState.STATE_OUT_OF_SERVICE)
-                        } catch (e: Exception) {}
-
-                        // Method 2: Force network mode preference if possible
+                        try { XposedHelpers.callMethod(ss, "setState", ServiceState.STATE_OUT_OF_SERVICE) } catch (e: Exception) {}
                         try {
                             val rilRef = XposedHelpers.getObjectField(phone, "mCi")
-                            if (rilRef != null) {
-                                XposedHelpers.callMethod(rilRef, "setPreferredNetworkType", 11, null) // 11 = LTE only
-                            }
+                            if (rilRef != null) { XposedHelpers.callMethod(rilRef, "setPreferredNetworkType", 11, null) }
                         } catch (e: Exception) {}
 
-                        // Method 3: Reject via method hook
                         param.result = false
 
                         val intent = Intent().apply {
@@ -337,7 +355,6 @@ class SentryHook : IXposedHookLoadPackage {
                         }
                         sendForensicBroadcast(context, intent)
 
-                        // Record blocking event - WICHTIG für Analytics!
                         try {
                             val blockingIntent = Intent("dev.fzer0x.imsicatcherdetector2.RECORD_BLOCKING_EVENT")
                             blockingIntent.setPackage("dev.fzer0x.imsicatcherdetector2")
@@ -360,64 +377,12 @@ class SentryHook : IXposedHookLoadPackage {
         }
     }
 
-    /**
-     * Intelligent LRU+LFU hybrid eviction for hook cache
-     */
     private fun evictLeastUsefulHookEntries(now: Long) {
         val entriesToRemove = hookCache.entries
-            .sortedWith(compareBy<Map.Entry<String, CacheEntry>> { 
-                // Primary sort: Age (older first)
-                now - it.value.timestamp 
-            }.thenBy { 
-                // Secondary sort: Access frequency (less frequent first)
-                it.value.accessCount 
-            }.thenBy { 
-                // Tertiary sort: Last access time (older first)
-                now - it.value.lastAccess 
-            })
-            .take(MAX_CACHE_SIZE / 10) // Remove 10% of entries
+            .sortedWith(compareBy<Map.Entry<String, CacheEntry>> { now - it.value.timestamp }.thenBy { it.value.accessCount }.thenBy { now - it.value.lastAccess })
+            .take(MAX_CACHE_SIZE / 10)
             .map { entry -> entry.key }
-        
-        entriesToRemove.forEach { key -> 
-            hookCache.remove(key)
-        }
-        
-        XposedBridge.log("SentryHook: Cache eviction - removed ${entriesToRemove.size} entries")
-    }
-    
-    /**
-     * Get cache performance statistics for monitoring
-     */
-    private fun getHookCacheStats(): Map<String, Any> {
-        val totalRequests = cacheHits + cacheMisses
-        val hitRate = if (totalRequests > 0) (cacheHits.toDouble() / totalRequests * 100) else 0.0
-        
-        return mapOf(
-            "cacheSize" to hookCache.size,
-            "maxCacheSize" to MAX_CACHE_SIZE,
-            "cacheHits" to cacheHits,
-            "cacheMisses" to cacheMisses,
-            "hitRate" to hitRate,
-            "cacheDurationSeconds" to (CACHE_DURATION / 1000)
-        )
-    }
-    
-    /**
-     * Periodic cache cleanup and performance logging
-     */
-    private fun performCacheMaintenance() {
-        val now = System.currentTimeMillis()
-        val stats = getHookCacheStats()
-        
-        // Log performance metrics periodically
-        if (cacheHits + cacheMisses % 1000 == 0L) {
-            XposedBridge.log("SentryHook: Cache stats - Size: ${stats["cacheSize"]}, Hit rate: ${"%.2f".format(stats["hitRate"])}%")
-        }
-        
-        // Remove expired entries
-        hookCache.entries.removeIf { entry -> 
-            now - entry.value.timestamp > CACHE_DURATION * 2 
-        }
+        entriesToRemove.forEach { key -> hookCache.remove(key) }
     }
     
     private fun isGsmRat(ss: ServiceState): Boolean {
@@ -436,19 +401,13 @@ class SentryHook : IXposedHookLoadPackage {
                     val cellInfoList = (param.args.firstOrNull { it is List<*> } as? List<CellInfo>) ?: return
                     val context = XposedHelpers.getObjectField(param.thisObject, "mContext") as Context
                     val subId = param.args[0] as Int
-                    val simSlot = getSlotIndex(context, subId)
+                    val sm = context.getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE) as SubscriptionManager
+                    val info = try { sm.getActiveSubscriptionInfo(subId) } catch (e: Exception) { null }
+                    val simSlot = info?.simSlotIndex ?: 0
                     processCellInfo(context, cellInfoList, simSlot)
                 }
             })
         } catch (e: Throwable) {}
-    }
-
-    private fun getSlotIndex(context: Context, subId: Int): Int {
-        try {
-            val sm = context.getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE) as SubscriptionManager
-            val info = sm.getActiveSubscriptionInfo(subId)
-            return info?.simSlotIndex ?: 0
-        } catch (e: Exception) { return 0 }
     }
 
     private fun hookInboundSmsHandler(lpparam: LoadPackageParam) {
@@ -459,7 +418,7 @@ class SentryHook : IXposedHookLoadPackage {
                 Array<ByteArray>::class.java, String::class.java, Int::class.java,
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
-                        if (!appEnabled.get()) return // App disabled - skip all processing
+                        if (!appEnabled.get()) return
                         
                         val context = XposedHelpers.getObjectField(param.thisObject, "mContext") as Context
                         val phone = XposedHelpers.getObjectField(param.thisObject, "mPhone")
@@ -482,7 +441,6 @@ class SentryHook : IXposedHookLoadPackage {
                                 }
                                 sendForensicBroadcast(context, intent)
 
-                                // Record blocking event
                                 try {
                                     val blockingIntent = Intent("dev.fzer0x.imsicatcherdetector2.RECORD_BLOCKING_EVENT")
                                     blockingIntent.setPackage("dev.fzer0x.imsicatcherdetector2")
@@ -612,7 +570,6 @@ class SentryHook : IXposedHookLoadPackage {
                     intent.putExtra("tac", if (identity.tac != Int.MAX_VALUE) identity.tac else -1)
                     intent.putExtra("mcc", identity.mccString); intent.putExtra("mnc", identity.mncString)
                     
-                    // Enhanced 5G/SA detection
                     val networkType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                         when {
                             identity.mncString == null || identity.mccString == null -> "5G NR (Unknown)"
@@ -620,13 +577,10 @@ class SentryHook : IXposedHookLoadPackage {
                             is5gNonStandalone(identity) -> "5G NSA (EN-DC)"
                             else -> "5G NR"
                         }
-                    } else {
-                        "5G NR"
-                    }
+                    } else { "5G NR" }
                     
                     intent.putExtra("networkType", networkType)
                     
-                    // Add 5G specific metrics
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                         intent.putExtra("nrArfcn", if (identity.nrarfcn != Int.MAX_VALUE) identity.nrarfcn else -1)
                         intent.putExtra("nrBand", extractNrBandFromArfcn(identity.nrarfcn))
@@ -658,29 +612,18 @@ class SentryHook : IXposedHookLoadPackage {
         if (foundIdentity) sendForensicBroadcast(context, intent)
     }
     
-    // 5G/SA Detection Helper Functions for Xposed
-    
     private fun is5gStandalone(identity: CellIdentityNr): Boolean {
         return try {
-            // Check for standalone indicators
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                // Method 1: Check if ENDC (E-UTRA-NR Dual Connectivity) is not supported
                 val endcSupport = XposedHelpers.callMethod(identity, "getEndcSupport") as? Boolean
                 if (endcSupport == false) return true
-                
-                // Method 2: Check NR operation status
                 val nrStatus = XposedHelpers.callMethod(identity, "getNrStatus") as? Int
-                if (nrStatus == 1) return true // Connected standalone
-                
-                // Method 3: Check if there's no LTE anchor
+                if (nrStatus == 1) return true
                 val lteBand = XposedHelpers.callMethod(identity, "getBandwidth") as? Int
                 if (lteBand == null || lteBand == 0) return true
             }
             false
-        } catch (e: Exception) {
-            XposedBridge.log("SentryHook: Error checking 5G SA status: ${e.message}")
-            false
-        }
+        } catch (e: Exception) { false }
     }
     
     private fun is5gNonStandalone(identity: CellIdentityNr): Boolean {
@@ -688,28 +631,22 @@ class SentryHook : IXposedHookLoadPackage {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 val endcSupport = XposedHelpers.callMethod(identity, "getEndcSupport") as? Boolean
                 if (endcSupport == true) return true
-                
                 val nrStatus = XposedHelpers.callMethod(identity, "getNrStatus") as? Int
-                if (nrStatus == 2) return true // Connected NSA
+                if (nrStatus == 2) return true
             }
             false
-        } catch (e: Exception) {
-            XposedBridge.log("SentryHook: Error checking 5G NSA status: ${e.message}")
-            false
-        }
+        } catch (e: Exception) { false }
     }
     
     private fun extractNrBandFromArfcn(nrarfcn: Int): String {
         if (nrarfcn == Int.MAX_VALUE) return "---"
-        
-        // NR-ARFCN to band mapping (simplified)
         return when {
             nrarfcn in 422000..434000 -> "n1"
             nrarfcn in 386000..399000 -> "n3"
-            nrarfcn in 1738000..1788000 -> "n257" // mmWave
-            nrarfcn in 2014667..2026667 -> "n258" // mmWave
-            nrarfcn in 2220000..2260000 -> "n260" // mmWave
-            nrarfcn in 2425000..2475000 -> "n261" // mmWave
+            nrarfcn in 1738000..1788000 -> "n257"
+            nrarfcn in 2014667..2026667 -> "n258"
+            nrarfcn in 2220000..2260000 -> "n260"
+            nrarfcn in 2425000..2475000 -> "n261"
             nrarfcn in 460000..480000 -> "n5"
             nrarfcn in 514000..524000 -> "n7"
             nrarfcn in 869000..904000 -> "n8"
@@ -728,31 +665,17 @@ class SentryHook : IXposedHookLoadPackage {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 val nrStatus = XposedHelpers.callMethod(identity, "getNrStatus") as? Int
                 when (nrStatus) {
-                    0 -> "IDLE"
-                    1 -> "CONNECTED_SA"
-                    2 -> "CONNECTED_NSA"
-                    3 -> "CONNECTED"
-                    else -> "UNKNOWN"
+                    0 -> "IDLE"; 1 -> "CONNECTED_SA"; 2 -> "CONNECTED_NSA"; 3 -> "CONNECTED"; else -> "UNKNOWN"
                 }
-            } else {
-                "UNKNOWN"
-            }
-        } catch (e: Exception) {
-            "UNKNOWN"
-        }
+            } else { "UNKNOWN" }
+        } catch (e: Exception) { "UNKNOWN" }
     }
     
     private fun extractNrDuplexMode(identity: CellIdentityNr): String {
-        // Simplified duplex mode detection based on band
         val band = extractNrBandFromArfcn(if (identity.nrarfcn != Int.MAX_VALUE) identity.nrarfcn else 0)
         return when {
-            band.startsWith("n7") || band.startsWith("n38") || 
-            band.startsWith("n40") || band.startsWith("n41") ||
-            band.startsWith("n77") || band.startsWith("n78") ||
-            band.startsWith("n79") -> "TDD"
-            band.startsWith("n1") || band.startsWith("n3") ||
-            band.startsWith("n5") || band.startsWith("n8") ||
-            band.startsWith("n20") || band.startsWith("n28") -> "FDD"
+            band.startsWith("n7") || band.startsWith("n38") || band.startsWith("n40") || band.startsWith("n41") || band.startsWith("n77") || band.startsWith("n78") || band.startsWith("n79") -> "TDD"
+            band.startsWith("n1") || band.startsWith("n3") || band.startsWith("n5") || band.startsWith("n8") || band.startsWith("n20") || band.startsWith("n28") -> "FDD"
             else -> "UNKNOWN"
         }
     }

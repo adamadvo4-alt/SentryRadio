@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Message
 import android.os.Parcel
@@ -95,6 +96,77 @@ class SentryHook : IXposedHookLoadPackage {
             hookAppStartup(lpparam)
             hookXposedCheck(lpparam)
         }
+
+        // Stealth: Hide Sentry Radio and Magisk from other apps
+        if (lpparam.packageName != "dev.fzer0x.imsicatcherdetector2" &&
+            lpparam.packageName != "android" &&
+            lpparam.packageName != "com.android.phone" &&
+            lpparam.packageName != "com.android.systemui") {
+            hookPackageManager(lpparam)
+        }
+    }
+
+    private fun hookPackageManager(lpparam: LoadPackageParam) {
+        try {
+            val pmClass = XposedHelpers.findClass("android.app.ApplicationPackageManager", lpparam.classLoader)
+            val targetPackage = "dev.fzer0x.imsicatcherdetector2"
+            val hideList = listOf(targetPackage, "com.topjohnwu.superuser")
+
+            XposedBridge.hookAllMethods(pmClass, "getInstalledPackages", object : XC_MethodHook() {
+                override fun afterHookedMethod(param: MethodHookParam) {
+                    val packages = param.result as? MutableList<*> ?: return
+                    val it = packages.iterator()
+                    while (it.hasNext()) {
+                        val info = it.next()
+                        val pName = XposedHelpers.getObjectField(info, "packageName") as? String
+                        if (hideList.contains(pName)) it.remove()
+                    }
+                }
+            })
+
+            XposedBridge.hookAllMethods(pmClass, "getInstalledApplications", object : XC_MethodHook() {
+                override fun afterHookedMethod(param: MethodHookParam) {
+                    val apps = param.result as? MutableList<*> ?: return
+                    val it = apps.iterator()
+                    while (it.hasNext()) {
+                        val info = it.next()
+                        val pName = XposedHelpers.getObjectField(info, "packageName") as? String
+                        if (hideList.contains(pName)) it.remove()
+                    }
+                }
+            })
+
+            XposedBridge.hookAllMethods(pmClass, "getPackageInfo", object : XC_MethodHook() {
+                override fun beforeHookedMethod(param: MethodHookParam) {
+                    val pName = param.args[0] as? String
+                    if (hideList.contains(pName)) {
+                        param.throwable = PackageManager.NameNotFoundException(pName)
+                    }
+                }
+            })
+
+            XposedBridge.hookAllMethods(pmClass, "getApplicationInfo", object : XC_MethodHook() {
+                override fun beforeHookedMethod(param: MethodHookParam) {
+                    val pName = param.args[0] as? String
+                    if (hideList.contains(pName)) {
+                        param.throwable = PackageManager.NameNotFoundException(pName)
+                    }
+                }
+            })
+
+            XposedBridge.hookAllMethods(pmClass, "queryIntentActivities", object : XC_MethodHook() {
+                override fun afterHookedMethod(param: MethodHookParam) {
+                    val activities = param.result as? MutableList<*> ?: return
+                    val it = activities.iterator()
+                    while (it.hasNext()) {
+                        val resolveInfo = it.next()
+                        val activityInfo = XposedHelpers.getObjectField(resolveInfo, "activityInfo")
+                        val pName = XposedHelpers.getObjectField(activityInfo, "packageName") as? String
+                        if (hideList.contains(pName)) it.remove()
+                    }
+                }
+            })
+        } catch (e: Throwable) {}
     }
 
     private fun loadSettingsFromPreferences(lpparam: LoadPackageParam) {

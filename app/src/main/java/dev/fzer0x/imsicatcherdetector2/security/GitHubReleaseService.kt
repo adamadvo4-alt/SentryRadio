@@ -15,7 +15,7 @@ class GitHubReleaseService {
 
     suspend fun fetchLatestRelease(): ReleaseInfo? {
         val request = Request.Builder()
-            .url("https://api.github.com/repos/fzer0x/SentryRadio/releases/latest")
+            .url("https://api.github.com/repos/Xposed-Modules-Repo/dev.fzer0x.imsicatcherdetector2/releases/latest")
             .header("User-Agent", "SentryRadio-UpdateManager")
             .build()
 

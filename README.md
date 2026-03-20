@@ -154,6 +154,7 @@ Distributed under the GNU GPL v3 License. See `LICENSE` for more information.
 - **SELinux Policy Hardening:** Added Magisk/KSU sepolicy rules to isolate radio device nodes (`/dev/smd*`), restricting access exclusively to Sentry and system radio processes.
 - **Libsu Integration:** Replaced legacy `Runtime.exec` with `libsu` in `ForensicService` for more stable, persistent, and performant root shell management.
 - **Native RIL Parcel Parsing:** Enhanced Xposed module to parse native RIL response parcels directly, providing manufacturer-consistent detection of encryption (A5/0) status beyond simple regex matching.
+- **Xposed Package Hiding:** Implemented advanced stealth by hooking `PackageManager` to hide Sentry Radio and Magisk/Root-related packages from all other apps on the system.
 - **Forensic Engine Update:** Integrated new monitors into the core forensic service.
 
 **v0.4.6**

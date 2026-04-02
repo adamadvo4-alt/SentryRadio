@@ -7,9 +7,11 @@ android {
             storeFile = file("~/.android/debug.keystore")
         }
     }
+    
     buildTypes {
         release {
-            signingConfig signingConfigs.release
+            signingConfig = signingConfigs.getByName("release")
+            isMinifyEnabled = false
         }
     }
 }

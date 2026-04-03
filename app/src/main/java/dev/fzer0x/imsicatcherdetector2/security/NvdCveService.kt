@@ -13,6 +13,7 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 class NvdCveService(private val apiKey: String? = null) {
     private val client = OkHttpClient.Builder()
@@ -25,7 +26,7 @@ class NvdCveService(private val apiKey: String? = null) {
     
     // Maximum total requests to prevent API abuse and crashes
     private val MAX_TOTAL_REQUESTS = 50
-    private var requestCount = 0
+    private val requestCount = AtomicInteger(0)
 
     private val searchKeywords = listOf(
         "qualcomm", "mediatek", "exynos", "snapdragon",
@@ -37,7 +38,7 @@ class NvdCveService(private val apiKey: String? = null) {
 
     suspend fun fetchCurrentVulnerabilities(): List<CveEntry> = withContext(Dispatchers.IO) {
         val allFetched = mutableListOf<CveEntry>()
-        requestCount = 0 // Reset counter for this session
+        requestCount.set(0) // Reset counter for this session
         
         Log.d(TAG, "Starting CVE fetch with ${searchKeywords.size} keywords")
         
@@ -47,7 +48,7 @@ class NvdCveService(private val apiKey: String? = null) {
         
         for ((batchIndex, batch) in keywordBatches.withIndex()) {
             // Check if we've exceeded the maximum request limit
-            if (requestCount >= MAX_TOTAL_REQUESTS) {
+            if (requestCount.get() >= MAX_TOTAL_REQUESTS) {
                 Log.w(TAG, "Reached maximum request limit ($MAX_TOTAL_REQUESTS). Stopping fetch to prevent crashes.")
                 break
             }
@@ -64,7 +65,7 @@ class NvdCveService(private val apiKey: String? = null) {
                     
                     do {
                         // Check request limit before making API call
-                        if (requestCount >= MAX_TOTAL_REQUESTS) {
+                        if (requestCount.get() >= MAX_TOTAL_REQUESTS) {
                             Log.w(TAG, "Request limit reached for keyword '$keyword'. Stopping.")
                             break
                         }
@@ -73,7 +74,7 @@ class NvdCveService(private val apiKey: String? = null) {
                         Log.d(TAG, "Fetching: $url")
                         
                         try {
-                            requestCount++ // Increment request counter
+                            requestCount.incrementAndGet() // Increment request counter
                             
                             val request = Request.Builder()
                                 .url(url)
@@ -140,7 +141,7 @@ class NvdCveService(private val apiKey: String? = null) {
         }
         
         val distinctResults = allFetched.distinctBy { it.cveId }
-        Log.d(TAG, "Final result: ${distinctResults.size} distinct CVEs from ${allFetched.size} total fetched (${requestCount} API requests made)")
+        Log.d(TAG, "Final result: ${distinctResults.size} distinct CVEs from ${allFetched.size} total fetched (${requestCount.get()} API requests made)")
         
         distinctResults
     }

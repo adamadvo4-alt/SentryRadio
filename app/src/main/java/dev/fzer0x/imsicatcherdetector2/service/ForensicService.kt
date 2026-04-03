@@ -561,7 +561,7 @@ class ForensicService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
     override fun onDestroy() {
         try { fusedLocationClient.removeLocationUpdates(locationCallback) } catch (e: Exception) {}
-        unregisterReceiver(settingsReceiver); unregisterReceiver(blockingEventReceiver); unregisterReceiver(commandReceiver)
+        unregisterReceiver(settingsReceiver); unregisterReceiver(blockingEventReceiver); unregisterReceiver(hardwareBlockingReceiver); unregisterReceiver(commandReceiver)
         logcatShell?.close()
         logcatProcess?.destroy()
         serviceScope.cancel()

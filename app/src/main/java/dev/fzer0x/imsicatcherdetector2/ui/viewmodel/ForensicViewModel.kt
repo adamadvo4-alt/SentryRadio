@@ -138,10 +138,10 @@ class ForensicViewModel(application: Application) : AndroidViewModel(application
         .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
         .build()
 
-    private val encryptedPrefs = EncryptedSharedPreferences.create(
-        application,
+    private val encryptedPrefs = EncryptedSharedPreferences(
         "sentry_secure_settings",
         masterKey,
+        application,
         EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
         EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
     )

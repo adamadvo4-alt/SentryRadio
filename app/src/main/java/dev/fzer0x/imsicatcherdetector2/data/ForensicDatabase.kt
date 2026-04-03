@@ -28,7 +28,7 @@ abstract class ForensicDatabase : RoomDatabase() {
                     ForensicDatabase::class.java,
                     "forensic_database"
                 )
-                .fallbackToDestructiveMigration()
+                .fallbackToDestructiveMigration(dropAllTables = true)
                 .build()
                 INSTANCE = instance
                 instance

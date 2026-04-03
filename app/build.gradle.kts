@@ -1,13 +1,27 @@
+plugins {
+    id("com.android.application")
+    kotlin("android")
+}
+
 android {
-    compileSdk = 33
+    compileSdk = 31
+
     defaultConfig {
-        applicationId = "com.example.sentryradio"
+        applicationId = "com.example.app"
         minSdk = 28
-        targetSdk = 33
+        targetSdk = 31
         versionCode = 1
         versionName = "1.0"
     }
-    kotlinOptions {
-        jvmTarget = "21"
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+        }
     }
+}
+
+kotlinOptions {
+    jvmTarget = "21"
 }

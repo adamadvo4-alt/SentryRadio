@@ -1,5 +1,13 @@
-plugins { ... }  // Include the other parts of your build.gradle.kts as necessary
-
-kotlinOptions { jvmTarget = "21" }
-
-dependencies { ... }  // Include your dependency declarations here
+android {
+    compileSdk = 33
+    defaultConfig {
+        applicationId = "com.example.sentryradio"
+        minSdk = 28
+        targetSdk = 33
+        versionCode = 1
+        versionName = "1.0"
+    }
+    kotlinOptions {
+        jvmTarget = "21"
+    }
+}

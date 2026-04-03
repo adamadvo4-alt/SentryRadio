@@ -23,7 +23,7 @@ android {
             keyAlias = "androiddebugkey"
             keyPassword = "android"
             storePassword = "android"
-            storeFile = file("~/.android/debug.keystore")
+            storeFile = file("${project.projectDir}/debug.keystore")
         }
     }
 
@@ -64,6 +64,12 @@ dependencies {
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)
+
+    // SECURITY: Encrypted SharedPreferences
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
+
+    // WORK: WorkManager for background tasks
+    implementation("androidx.work:work-runtime-ktx:2.9.0")
 
     implementation("org.osmdroid:osmdroid-android:6.1.18")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")

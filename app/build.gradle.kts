@@ -6,10 +6,6 @@ plugins {
 }
 
 android {
-dexOptions {
-    javaMaxHeapSize = "4g"
-    preDexLibraries = false
-}
     namespace = "dev.fzer0x.imsicatcherdetector2"
     compileSdk = 36
 

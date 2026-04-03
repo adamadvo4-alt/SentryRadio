@@ -19,10 +19,8 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-        maven { url = uri("https://api.xposed.info/") }
-        maven { url = uri("https://jitpack.io") }
     }
 }
 
-rootProject.name = "IMSICatcherDetector2"
+rootProject.name = "SentryRadio"
 include(":app")
